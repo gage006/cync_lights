@@ -9,6 +9,8 @@ from typing import Any
 
 _LOGGER = logging.getLogger(__name__)
 
+STATE_REFRESH_INTERVAL = 180
+
 API_AUTH = "https://api.gelighting.com/v2/user_auth"
 API_REQUEST_CODE = "https://api.gelighting.com/v2/two_factor/email/verifycode"
 API_2FACTOR_AUTH = "https://api.gelighting.com/v2/user_auth/two_factor"
@@ -53,6 +55,7 @@ class CyncHub:
         self.options = options
         self._seq_num = 0
         self.pending_commands = {}
+        self._logged_unhandled_packets = set()
         [room.initialize() for room in self.cync_rooms.values() if room.is_subgroup]
         [room.initialize() for room in self.cync_rooms.values() if not room.is_subgroup]
 
@@ -93,8 +96,9 @@ class CyncHub:
                 read_tcp_messages = asyncio.create_task(self._read_tcp_messages(), name = "Read TCP Messages")
                 maintain_connection = asyncio.create_task(self._maintain_connection(), name = "Maintain Connection")
                 update_state = asyncio.create_task(self._update_state(), name = "Update State")
+                periodic_state_refresh = asyncio.create_task(self._periodic_state_refresh(), name = "Periodic State Refresh")
                 update_connected_devices = asyncio.create_task(self._update_connected_devices(), name = "Update Connected Devices")
-                read_write_tasks = [read_tcp_messages, maintain_connection, update_state, update_connected_devices]
+                read_write_tasks = [read_tcp_messages, maintain_connection, update_state, periodic_state_refresh, update_connected_devices]
                 try:
                     done, pending = await asyncio.wait(read_write_tasks,return_when=asyncio.FIRST_EXCEPTION)
                     for task in done:
@@ -177,6 +181,8 @@ class CyncHub:
                                             rgb = {'r':int(packet[20]),'g':int(packet[21]),'b':int(packet[22]),'active':int(packet[16])==254}
                                             self.cync_switches[deviceID].update_switch(state,brightness,color_temp,rgb)
                                     packet = packet[24:]
+                            else:
+                                self._log_unhandled_packet(packet_type, packet)
                         elif packet_type == 131:
                             switch_id = str(struct.unpack(">I", packet[0:4])[0])
                             home_id = self.switchID_to_homeID[switch_id]
@@ -196,6 +202,8 @@ class CyncHub:
                                     self.cync_motion_sensors[deviceID].update_motion_sensor(motion)
                                 if deviceID in self.cync_ambient_light_sensors:
                                     self.cync_ambient_light_sensors[deviceID].update_ambient_light_sensor(ambient_light)
+                            else:
+                                self._log_unhandled_packet(packet_type, packet)
                         elif packet_type == 67 and packet_length >= 26 and int(packet[4]) == 1 and int(packet[5]) == 1 and int(packet[6]) == 6:
                             #parse state packet
                             switch_id = str(struct.unpack(">I", packet[0:4])[0])
@@ -227,6 +235,8 @@ class CyncHub:
                             command_received = self.pending_commands.get(seq,None)
                             if command_received is not None:
                                 command_received(seq)
+                        else:
+                            self._log_unhandled_packet(packet_type, packet)
                 except Exception as e:
                     _LOGGER.error(e)
                 data = data[packet_length+5:]
@@ -279,18 +289,43 @@ class CyncHub:
     async def _update_state(self):
         while not self.connected_devices_updated:
             await asyncio.sleep(2)
-        for connected_devices in self.connected_devices.values():
-            if len(connected_devices) > 0:
-                controller = self.cync_switches[connected_devices[0]].switch_id
-                seq = self.get_seq_num()
-                state_request = bytes.fromhex('7300000018') + int(controller).to_bytes(4,'big') + seq.to_bytes(2,'big') + bytes.fromhex('007e00000000f85206000000ffff0000567e')
-                self.loop.call_soon_threadsafe(self.send_request,state_request)
+        self._request_full_state()
         while False in [self.cync_switches[dev_id]._update_callback is not None for dev_id in self.options["switches"]] and False in [self.cync_rooms[dev_id]._update_callback is not None for dev_id in self.options["rooms"]]:
             await asyncio.sleep(2)
         for dev in self.cync_switches.values():
             dev.publish_update()
         for room in self.cync_rooms.values():
             dev.publish_update()
+
+    async def _periodic_state_refresh(self):
+        while not self.shutting_down:
+            await asyncio.sleep(STATE_REFRESH_INTERVAL)
+            if self.connected_devices_updated:
+                self._request_full_state()
+        raise ShuttingDown
+
+    def _request_full_state(self):
+        for connected_devices in self.connected_devices.values():
+            if len(connected_devices) > 0:
+                controller = self.cync_switches[connected_devices[0]].switch_id
+                seq = self.get_seq_num()
+                state_request = bytes.fromhex('7300000018') + int(controller).to_bytes(4,'big') + seq.to_bytes(2,'big') + bytes.fromhex('007e00000000f85206000000ffff0000567e')
+                self.loop.call_soon_threadsafe(self.send_request, state_request)
+
+    def _log_unhandled_packet(self, packet_type, packet):
+        if not _LOGGER.isEnabledFor(logging.DEBUG):
+            return
+        signature = (packet_type, len(packet), packet[13] if len(packet) > 13 else None)
+        if signature in self._logged_unhandled_packets:
+            return
+        self._logged_unhandled_packets.add(signature)
+        _LOGGER.debug(
+            "Unhandled Cync packet type=%s len=%s subtype=%s payload=%s",
+            packet_type,
+            len(packet),
+            signature[2],
+            packet[:32].hex(),
+        )
 
     def send_request(self,request):
         async def send():
