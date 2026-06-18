@@ -24,7 +24,8 @@
           "subgroups":"Groups [group (room:home)]",
           "switches":"Switches [switch/bulb (room:home)]",
           "motion_sensors":"Motion Sensors [sensor (room:home)]",
-          "ambient_light_sensors":"Ambient Light Sensors [sensor (room:home)]]"
+          "ambient_light_sensors":"Ambient Light Sensors [sensor (room:home)]]",
+          "state_refresh_interval":"State refresh interval (seconds, min 30)"
         }
       }
     },
@@ -60,7 +61,8 @@
           "subgroups":"Groups [group (room:home)]",
           "switches":"Switches [switch/bulb (room:home)]",
           "motion_sensors":"Motion Sensors [sensor (room:home)]",
-          "ambient_light_sensors":"Ambient Light Sensors [sensor (room:home)]]"
+          "ambient_light_sensors":"Ambient Light Sensors [sensor (room:home)]]",
+          "state_refresh_interval":"State refresh interval (seconds, min 30)"
         }
       }
     },

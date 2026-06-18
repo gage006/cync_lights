@@ -9,7 +9,9 @@ from typing import Any
 
 _LOGGER = logging.getLogger(__name__)
 
-STATE_REFRESH_INTERVAL = 180
+# Default seconds between automatic full-state refreshes. Used as the fallback
+# when the user has not set a custom interval in the integration options.
+STATE_REFRESH_INTERVAL = 60
 
 API_AUTH = "https://api.gelighting.com/v2/user_auth"
 API_REQUEST_CODE = "https://api.gelighting.com/v2/two_factor/email/verifycode"
@@ -53,6 +55,9 @@ class CyncHub:
         self.switchID_to_deviceIDs = {device_info.switch_id:[dev_id for dev_id, dev_info in self.cync_switches.items() if dev_info.switch_id == device_info.switch_id] for device_id, device_info in self.cync_switches.items() if int(device_info.switch_id) > 0}
         self.connected_devices_updated = False
         self.options = options
+        # Seconds between automatic full-state refreshes, configurable via the
+        # integration options. Floored at 30s to avoid hammering the Cync cloud.
+        self.state_refresh_interval = max(30, int(options.get("state_refresh_interval", STATE_REFRESH_INTERVAL)))
         self._seq_num = 0
         self.pending_commands = {}
         self._logged_unhandled_packets = set()
@@ -180,6 +185,7 @@ class CyncHub:
                                             color_temp = int(packet[16])
                                             rgb = {'r':int(packet[20]),'g':int(packet[21]),'b':int(packet[22]),'active':int(packet[16])==254}
                                             self.cync_switches[deviceID].update_switch(state,brightness,color_temp,rgb)
+                                            _LOGGER.debug("Applied full-state color for %s: color_temp=%s rgb=%s", deviceID, color_temp, rgb)
                                     packet = packet[24:]
                             else:
                                 self._log_unhandled_packet(packet_type, packet)
@@ -225,6 +231,7 @@ class CyncHub:
                                             color_temp = int(packet[6])
                                             rgb = {'r':int(packet[7]),'g':int(packet[8]),'b':int(packet[9]),'active':int(packet[6])==254}
                                             self.cync_switches[deviceID].update_switch(state,brightness,color_temp,rgb)
+                                            _LOGGER.debug("Applied full-state color for %s: color_temp=%s rgb=%s", deviceID, color_temp, rgb)
                                 packet = packet[19:]
                         elif packet_type == 171:
                             switch_id = str(struct.unpack(">I", packet[0:4])[0])
@@ -299,7 +306,7 @@ class CyncHub:
 
     async def _periodic_state_refresh(self):
         while not self.shutting_down:
-            await asyncio.sleep(STATE_REFRESH_INTERVAL)
+            await asyncio.sleep(self.state_refresh_interval)
             if self.connected_devices_updated:
                 self._request_full_state()
         raise ShuttingDown
@@ -311,6 +318,7 @@ class CyncHub:
                 seq = self.get_seq_num()
                 state_request = bytes.fromhex('7300000018') + int(controller).to_bytes(4,'big') + seq.to_bytes(2,'big') + bytes.fromhex('007e00000000f85206000000ffff0000567e')
                 self.loop.call_soon_threadsafe(self.send_request, state_request)
+                _LOGGER.debug("Sent full-state refresh request via controller %s (seq %s)", controller, seq)
 
     def _log_unhandled_packet(self, packet_type, packet):
         if not _LOGGER.isEnabledFor(logging.DEBUG):

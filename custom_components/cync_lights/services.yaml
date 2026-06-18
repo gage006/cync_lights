@@ -1,0 +1,7 @@
+refresh:
+  name: Refresh state
+  description: >-
+    Requests an immediate full-state refresh from all configured Cync hubs, pulling the latest
+    on/off, brightness, color temperature, and RGB color — including changes made from the Cync
+    mobile app, which are not pushed to Home Assistant in real time. The refreshed state arrives a
+    short moment later over the cloud connection, so wait briefly before reading the values.
