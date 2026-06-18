@@ -9,7 +9,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.core import callback
 from .const import DOMAIN
-from .cync_hub import CyncUserData
+from .cync_hub import CyncUserData, STATE_REFRESH_INTERVAL
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -143,9 +143,13 @@ class CyncConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     "ambient_light_sensors",
                     description = {"suggested_value" : [device_id for device_id,device_info in self.data["data"]["cync_config"]["devices"].items() if device_info['AMBIENT_LIGHT']]},
                 ): cv.multi_select({device_id : f'{device_info["name"]} ({device_info["room_name"]}:{device_info["home_name"]})' for device_id,device_info in self.data["data"]["cync_config"]["devices"].items() if device_info.get('AMBIENT_LIGHT',False)}),
+                vol.Optional(
+                    "state_refresh_interval",
+                    default=STATE_REFRESH_INTERVAL,
+                ): vol.All(vol.Coerce(int), vol.Range(min=30)),
             }
         )
-        
+
         return self.async_show_form(step_id="select_switches", data_schema=switches_data_schema)
 
     async def _async_finish_setup(
@@ -277,6 +281,10 @@ class CyncOptionsFlowHandler(config_entries.OptionsFlow):
                     "ambient_light_sensors",
                     description = {"suggested_value" : [sensor for sensor in self.entry.options["ambient_light_sensors"] if sensor in self.entry.data["cync_config"]["devices"].keys()]},
                 ): cv.multi_select({device_id : f'{device_info["name"]} ({device_info["room_name"]}:{device_info["home_name"]})' for device_id,device_info in self.entry.data["cync_config"]["devices"].items() if device_info.get('AMBIENT_LIGHT',False)}),
+                vol.Optional(
+                    "state_refresh_interval",
+                    default=self.entry.options.get("state_refresh_interval", STATE_REFRESH_INTERVAL),
+                ): vol.All(vol.Coerce(int), vol.Range(min=30)),
             }
         )
 
