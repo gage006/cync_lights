@@ -9,6 +9,19 @@ from typing import Any
 
 _LOGGER = logging.getLogger(__name__)
 
+# Opt-in, very verbose child logger that dumps every inbound packet with its
+# full payload. It is silent unless explicitly enabled, e.g. in Home Assistant's
+# configuration.yaml:
+#
+#   logger:
+#     logs:
+#       custom_components.cync_lights.cync_hub.packets: debug
+#
+# Use it to capture exactly what the Cync cloud returns after a refresh so the
+# state-response packet can be identified. (It inherits DEBUG if the parent
+# logger is already at DEBUG.)
+_PACKET_LOGGER = _LOGGER.getChild("packets")
+
 # Default seconds between automatic full-state refreshes. Used as the fallback
 # when the user has not set a custom interval in the integration options.
 STATE_REFRESH_INTERVAL = 60
@@ -139,6 +152,8 @@ class CyncHub:
                 packet = data[5:packet_length+5]
                 try:
                     if packet_length == len(packet):
+                        if _PACKET_LOGGER.isEnabledFor(logging.DEBUG):
+                            _PACKET_LOGGER.debug("RX type=%s len=%s payload=%s", packet_type, packet_length, packet.hex())
                         if packet_type == 115:
                             switch_id = str(struct.unpack(">I", packet[0:4])[0])
                             home_id = self.switchID_to_homeID[switch_id]
@@ -244,6 +259,12 @@ class CyncHub:
                                 command_received(seq)
                         else:
                             self._log_unhandled_packet(packet_type, packet)
+                    else:
+                        _LOGGER.debug(
+                            "Incomplete packet not processed: type=%s declared_len=%s bytes_available=%s "
+                            "(a large state response may be split across reads or exceed the 1000-byte read buffer)",
+                            packet_type, packet_length, len(packet),
+                        )
                 except Exception as e:
                     _LOGGER.error(e)
                 data = data[packet_length+5:]
@@ -314,11 +335,20 @@ class CyncHub:
     def _request_full_state(self):
         for connected_devices in self.connected_devices.values():
             if len(connected_devices) > 0:
-                controller = self.cync_switches[connected_devices[0]].switch_id
-                seq = self.get_seq_num()
-                state_request = bytes.fromhex('7300000018') + int(controller).to_bytes(4,'big') + seq.to_bytes(2,'big') + bytes.fromhex('007e00000000f85206000000ffff0000567e')
-                self.loop.call_soon_threadsafe(self.send_request, state_request)
-                _LOGGER.debug("Sent full-state refresh request via controller %s (seq %s)", controller, seq)
+                # Query through every Wi-Fi connected controller in the home, not
+                # just the first one. A single controller may only relay state for
+                # the mesh segment it can reach, so broadcasting the query through
+                # each controller improves the odds of receiving a complete refresh.
+                controllers = []
+                for device_id in connected_devices:
+                    controller = self.cync_switches[device_id].switch_id
+                    if controller not in controllers:
+                        controllers.append(controller)
+                for controller in controllers:
+                    seq = self.get_seq_num()
+                    state_request = bytes.fromhex('7300000018') + int(controller).to_bytes(4,'big') + seq.to_bytes(2,'big') + bytes.fromhex('007e00000000f85206000000ffff0000567e')
+                    self.loop.call_soon_threadsafe(self.send_request, state_request)
+                    _LOGGER.debug("Sent full-state refresh request via controller %s (seq %s)", controller, seq)
 
     def _log_unhandled_packet(self, packet_type, packet):
         if not _LOGGER.isEnabledFor(logging.DEBUG):
@@ -332,7 +362,7 @@ class CyncHub:
             packet_type,
             len(packet),
             signature[2],
-            packet[:32].hex(),
+            packet.hex(),
         )
 
     def send_request(self,request):
