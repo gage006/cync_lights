@@ -141,14 +141,22 @@ class CyncHub:
         await self.writer.drain()
         await self.reader.read(1000)
         self.logged_in = True
+        data = b''
         while not self.shutting_down:
-            data = await self.reader.read(1000)
-            if len(data) == 0:
+            chunk = await self.reader.read(1000)
+            if len(chunk) == 0:
                 self.logged_in = False
                 raise LostConnection
+            data += chunk
             while len(data) >= 12:
                 packet_type = int(data[0])
                 packet_length = struct.unpack(">I", data[1:5])[0]
+                if len(data) < packet_length + 5:
+                    # Full packet not yet received: it spans multiple reads or
+                    # exceeds the read size. Keep the buffered bytes and read
+                    # more before parsing, so large state responses (e.g. the
+                    # type-171 full-state push) aren't truncated and dropped.
+                    break
                 packet = data[5:packet_length+5]
                 try:
                     if packet_length == len(packet):
@@ -259,12 +267,6 @@ class CyncHub:
                                 command_received(seq)
                         else:
                             self._log_unhandled_packet(packet_type, packet)
-                    else:
-                        _LOGGER.debug(
-                            "Incomplete packet not processed: type=%s declared_len=%s bytes_available=%s "
-                            "(a large state response may be split across reads or exceed the 1000-byte read buffer)",
-                            packet_type, packet_length, len(packet),
-                        )
                 except Exception as e:
                     _LOGGER.error(e)
                 data = data[packet_length+5:]
